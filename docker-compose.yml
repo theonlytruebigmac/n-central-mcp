@@ -7,6 +7,7 @@ services:
     environment:
       - NC_SERVER_URL=${NC_SERVER_URL}
       - NC_JWT_TOKEN=${NC_JWT_TOKEN}
+      - NC_WRITE_MODE=${NC_WRITE_MODE:-write}
       - MCP_PORT=3100
       - MCP_API_KEY=${MCP_API_KEY}
       - MCP_CORS_ORIGIN=${MCP_CORS_ORIGIN:-}

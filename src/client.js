@@ -1,5 +1,5 @@
 /**
- * N-central API client — authenticated GET with retry, rate-limit handling,
+ * N-central API client — authenticated HTTP with retry, rate-limit handling,
  * and automatic token refresh on 401.
  */
 
@@ -8,6 +8,10 @@ import { getAccessToken, reAuthenticate } from './auth.js';
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
 const TIMEOUT_MS = 30_000;
+
+// GET/PUT/DELETE are idempotent — safe to retry on timeouts and 5xx.
+// POST/PATCH are not — retry only auth/rate-limit failures (which did not process the request).
+const IDEMPOTENT_METHODS = new Set(['GET', 'PUT', 'DELETE', 'HEAD']);
 
 let serverUrl = null;
 
@@ -35,33 +39,42 @@ export function sanitizePathParam(value) {
   return str;
 }
 
-export async function apiGet(path, params = {}) {
+async function apiRequest(method, path, { params = {}, body = null } = {}) {
   if (!serverUrl) throw new Error('Server URL not set');
 
   const url = buildUrl(path, params);
+  const hasBody = body != null;
+  const canRetryTransient = IDEMPOTENT_METHODS.has(method);
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const token = await getAccessToken();
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
 
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+    };
+    if (hasBody) headers['Content-Type'] = 'application/json';
+
     let res;
     try {
       res = await fetch(url, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        method,
+        headers,
+        body: hasBody ? JSON.stringify(body) : undefined,
         signal: ac.signal,
       });
     } catch (err) {
       clearTimeout(timer);
       if (err.name === 'AbortError') {
-        if (attempt < MAX_RETRIES) {
+        if (attempt < MAX_RETRIES && canRetryTransient) {
           const delay = RETRY_DELAY_MS * 2 ** attempt;
-          console.error(`Timeout on ${stripQuery(path)}, retry in ${delay}ms...`);
+          console.error(`Timeout on ${method} ${stripQuery(path)}, retry in ${delay}ms...`);
           await sleep(delay);
           continue;
         }
-        throw new Error(`Request timed out after ${MAX_RETRIES} retries`);
+        throw new Error(`Request timed out on ${method} ${stripQuery(path)}`);
       }
       throw err;
     }
@@ -88,21 +101,31 @@ export async function apiGet(path, params = {}) {
     }
 
     if (res.status === 500 || res.status === 503) {
-      if (attempt < MAX_RETRIES) {
+      if (attempt < MAX_RETRIES && canRetryTransient) {
         const delay = RETRY_DELAY_MS * 2 ** attempt;
-        console.error(`Server error (${res.status}), retry in ${delay}ms...`);
+        console.error(`Server error (${res.status}) on ${method} ${stripQuery(path)}, retry in ${delay}ms...`);
         await sleep(delay);
         continue;
       }
-      throw new Error(`Server error ${res.status} after retries`);
+      throw new Error(`Server error ${res.status} on ${method} ${stripQuery(path)}`);
     }
 
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`API error ${res.status} on ${stripQuery(path)}: ${truncate(body, 200)}`);
+      const errBody = await res.text();
+      throw new Error(`API error ${res.status} on ${method} ${stripQuery(path)}: ${truncate(errBody, 200)}`);
     }
 
-    const data = await res.json();
+    if (res.status === 204) return null;
+
+    const text = await res.text();
+    if (!text) return null;
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return text;
+    }
 
     // N-central sometimes wraps errors inside 200 responses
     if (data?.['error message']) {
@@ -111,6 +134,26 @@ export async function apiGet(path, params = {}) {
 
     return data;
   }
+}
+
+export function apiGet(path, params = {}) {
+  return apiRequest('GET', path, { params });
+}
+
+export function apiPost(path, body = null, params = {}) {
+  return apiRequest('POST', path, { body, params });
+}
+
+export function apiPut(path, body = null, params = {}) {
+  return apiRequest('PUT', path, { body, params });
+}
+
+export function apiPatch(path, body = null, params = {}) {
+  return apiRequest('PATCH', path, { body, params });
+}
+
+export function apiDelete(path, params = {}, body = null) {
+  return apiRequest('DELETE', path, { body, params });
 }
 
 function stripQuery(path) {

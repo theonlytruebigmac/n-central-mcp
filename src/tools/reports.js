@@ -1,6 +1,6 @@
 /** Report tools — auto-paginated exports and cross-entity aggregate reports. */
 
-import { apiGet, sanitizePathParam } from '../client.js';
+import { apiGet, apiPost, sanitizePathParam } from '../client.js';
 import { fetchAll, mapConcurrent, toCsv } from '../paginator.js';
 
 export const reportTools = [
@@ -526,6 +526,24 @@ export const reportTools = [
 
       if (args.format === 'json') return results;
       return toCsv(results);
+    },
+  },
+  {
+    name: 'generate_patch_comparison_report',
+    writeScope: 'write',
+    description: 'Submit a request to generate a patch comparison report. Required: startDate. Optional filters: installStatuses[], patchApprovals[], patchCategories[]. Returns a report ID (fetch via get_report).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        startDate: { type: 'string', description: 'Report start date (ISO-8601)' },
+        installStatuses: { type: 'array', description: 'Filter by install statuses', items: { type: 'string' } },
+        patchApprovals: { type: 'array', description: 'Filter by patch approval states', items: { type: 'string' } },
+        patchCategories: { type: 'array', description: 'Filter by patch categories', items: { type: 'string' } },
+      },
+      required: ['startDate'],
+    },
+    handler: async (args) => {
+      return await apiPost('/api/report/patch-comparison', args);
     },
   },
 ];

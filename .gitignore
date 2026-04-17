@@ -5,3 +5,4 @@ node_modules/
 *.csv
 *.json.bak
 reports/
+.mcp.json

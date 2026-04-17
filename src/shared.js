@@ -10,6 +10,10 @@ export const paginationParams = {
     description: 'Sort order: ASC, asc, ascending, natural, desc, descending, reverse',
     enum: ['ASC', 'asc', 'ascending', 'natural', 'desc', 'descending', 'reverse'],
   },
+  all: {
+    type: 'boolean',
+    description: 'Auto-paginate: fetch every page and return the combined list. Ignores pageNumber/pageSize. Use for complete results; omit to return a single page (cheaper, safer for large environments).',
+  },
 };
 
 export function paginationArgs(args) {

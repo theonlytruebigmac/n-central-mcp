@@ -9,6 +9,7 @@
  * Env vars:
  *   NC_SERVER_URL    - N-central server URL
  *   NC_JWT_TOKEN     - User-API JWT token from N-central
+ *   NC_WRITE_MODE    - read-only | write | full (default: write)
  *   MCP_PORT         - Set to enable Streamable HTTP mode (otherwise stdio)
  *   MCP_API_KEY      - Required for HTTP mode auth
  *   MCP_CORS_ORIGIN  - Allowed CORS origin (default: disabled)
@@ -54,16 +55,38 @@ const MAX_BODY_SIZE = 1024 * 1024; // 1 MB
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 120;
 
+// Write mode gates which tools get registered.
+//   read-only   — only GET/read tools (writeScope: 'read')
+//   write       — adds create/update tools (writeScope: 'write')
+//   full        — adds destructive tools: delete/direct-execution (writeScope: 'destructive')
+const NC_WRITE_MODE = (process.env.NC_WRITE_MODE || 'write').toLowerCase();
+const VALID_WRITE_MODES = new Set(['read-only', 'write', 'full']);
+if (!VALID_WRITE_MODES.has(NC_WRITE_MODE)) {
+  console.error(`Error: NC_WRITE_MODE must be one of: read-only, write, full (got: ${NC_WRITE_MODE})`);
+  process.exit(1);
+}
+
 const SENSITIVE_TOOLS = new Set([
   'get_site_registration_token',
   'get_org_unit_registration_token',
   'get_customer_registration_token',
+  'get_registration_token',
   'list_users',
+  'list_all_users',
   'list_user_roles',
   'get_user_role',
   'list_access_groups',
+  'list_all_access_groups',
   'get_access_group',
 ]);
+
+function isToolAllowed(tool) {
+  const scope = tool.writeScope || 'read';
+  if (scope === 'read') return true;
+  if (scope === 'write') return NC_WRITE_MODE === 'write' || NC_WRITE_MODE === 'full';
+  if (scope === 'destructive') return NC_WRITE_MODE === 'full';
+  return false;
+}
 
 // --- Rate limiting ---
 
@@ -103,13 +126,33 @@ const allTools = [
   ...userTools,
   ...miscTools,
   ...reportTools,
-];
+].filter(isToolAllowed);
+
+// Any non-read tool is sensitive — audit-log every call.
+for (const tool of allTools) {
+  if (tool.writeScope && tool.writeScope !== 'read') SENSITIVE_TOOLS.add(tool.name);
+}
 
 function jsonSchemaToZod(prop) {
   let schema;
   switch (prop.type) {
     case 'number':
+    case 'integer':
       schema = z.number();
+      break;
+    case 'boolean':
+      schema = z.boolean();
+      break;
+    case 'array': {
+      const itemType = prop.items?.type;
+      if (itemType === 'number' || itemType === 'integer') schema = z.array(z.number());
+      else if (itemType === 'boolean') schema = z.array(z.boolean());
+      else if (itemType === 'object') schema = z.array(z.object({}).passthrough());
+      else schema = z.array(z.string());
+      break;
+    }
+    case 'object':
+      schema = z.object({}).passthrough();
       break;
     case 'string':
       schema = (prop.enum?.length) ? z.enum(prop.enum) : z.string();
@@ -287,7 +330,7 @@ async function main() {
   try {
     const resourceCount = 4;
     const promptCount = 4;
-    console.error(`Registered ${allTools.length} tools, ${resourceCount} resources, ${promptCount} prompts`);
+    console.error(`Registered ${allTools.length} tools, ${resourceCount} resources, ${promptCount} prompts (NC_WRITE_MODE=${NC_WRITE_MODE})`);
     console.error('Auth will be performed on first tool call.');
 
     if (MCP_PORT) {
