@@ -267,6 +267,86 @@ The server exposes a standard **Streamable HTTP** MCP endpoint:
 
 ---
 
+## 10. Hermes Agent
+
+Hermes can use this server in two practical ways:
+- **Local stdio** when Hermes runs on the same machine as the n-central server process.
+- **Remote HTTP** when Hermes connects to a Streamable HTTP endpoint.
+
+### A. Local stdio install
+
+1. Start the n-central server in stdio mode on the same machine as Hermes.
+
+   ```bash
+   export NC_SERVER_URL=https://ncentral.example.com
+   export NC_JWT_TOKEN=<jwt>
+   export NC_WRITE_MODE=read-only
+   node /abs/path/to/n-central-mcp/index.js
+   ```
+
+2. Add the server to Hermes with `hermes mcp add`:
+
+   ```bash
+   hermes mcp add ncentral \
+     --command node \
+     --env NC_SERVER_URL=https://ncentral.example.com \
+     --env NC_JWT_TOKEN=<jwt> \
+     --env NC_WRITE_MODE=read-only \
+     --args /abs/path/to/n-central-mcp/index.js
+   ```
+
+3. Run `hermes mcp configure ncentral` and keep the initial tool set narrow until you trust the
+   integration.
+
+4. Start a new Hermes session. The first tool call will authenticate to N-central with the JWT.
+
+### B. Remote HTTP install
+
+1. Start the n-central server in HTTP mode:
+
+   ```bash
+   export NC_SERVER_URL=https://ncentral.example.com
+   export NC_JWT_TOKEN=<jwt>
+   export MCP_PORT=3100
+   export MCP_API_KEY="$(openssl rand -hex 32)"
+   npm run start:http
+   ```
+
+2. For a single-tenant HTTP server, add it in Hermes with the built-in bearer-token flow:
+
+   ```bash
+   hermes mcp add ncentral --url http://<host>:3100/mcp --auth header
+   ```
+
+   Hermes stores the bearer token in `~/.hermes/.env` as `MCP_NCENTRAL_API_KEY` and writes the
+   matching `Authorization` header into `~/.hermes/config.yaml`.
+
+3. For multi-tenant HTTP, add the extra N-central headers manually in `~/.hermes/config.yaml`:
+
+   ```yaml
+   mcp_servers:
+     ncentral:
+       url: "http://<host>:3100/mcp"
+       headers:
+         Authorization: "Bearer ${MCP_NCENTRAL_API_KEY}"
+         X-NC-FQDN: "${NC_FQDN}"
+         X-NC-JWT: "${NC_JWT}"
+   ```
+
+   Then set `NC_FQDN` and `NC_JWT` in `~/.hermes/.env`. Hermes’s `mcp add` CLI does not generate
+   those extra headers for you.
+
+4. If the server is multi-tenant, make sure it was started with `NC_MULTI_TENANT=1`. Without that
+   flag, the server ignores `X-NC-FQDN` and `X-NC-JWT` and uses its own environment credentials.
+
+5. Finish with `hermes mcp configure ncentral`, then restart Hermes.
+
+### Verify
+
+- `hermes mcp list` shows the server as configured.
+- `hermes mcp test ncentral` confirms Hermes can reach the endpoint.
+- `curl -s http://<host>:3100/healthz` returns `{"status":"ok",...}` when the HTTP server is up.
+
 ## Multiple servers without hosting
 
 You don't need multi-tenant mode just to use several N-centrals from your own editor — define one
