@@ -440,7 +440,126 @@ Each message contains:
 
 Prompt arguments are strings.
 
-## 9. How to read the outputs
+## 9. TOON output examples
+
+For heavily repeated JSON arrays, TOON is usually easier to read in a terminal than raw JSON. Keep the tool request as `format: "json"`, extract the JSON from the MCP text payload, then pass it to `toon -e -`.
+
+Example: show a compact device list in TOON:
+
+```bash
+curl -sS -X POST "$BASE_URL" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $SESSION_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":12,
+    "method":"tools/call",
+    "params":{
+      "name":"list_devices",
+      "arguments":{
+        "pageNumber":1,
+        "pageSize":10,
+        "sortBy":"deviceName",
+        "sortOrder":"ascending",
+        "format":"json"
+      }
+    }
+  }' \
+  | sed -n 's/^data: //p' \
+  | jq '.result.content[0].text | fromjson | .data' \
+  | toon -e -
+```
+
+That produces a TOON array table instead of a large repeated JSON object list.
+
+For a narrower, more readable view, select only the fields you care about before converting:
+
+```bash
+curl -sS -X POST "$BASE_URL" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $SESSION_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":13,
+    "method":"tools/call",
+    "params":{
+      "name":"list_devices",
+      "arguments":{
+        "pageNumber":1,
+        "pageSize":10,
+        "sortBy":"deviceName",
+        "sortOrder":"ascending",
+        "format":"json"
+      }
+    }
+  }' \
+  | sed -n 's/^data: //p' \
+  | jq '.result.content[0].text
+        | fromjson
+        | .data
+        | map({
+            deviceId,
+            longName,
+            customerName,
+            deviceClass,
+            lastLoggedInUser,
+            lastApplianceCheckinTime
+          })' \
+  | toon -e -
+```
+
+If you want the page metadata too, convert a small object containing both `_page` and `devices`:
+
+```bash
+curl -sS -X POST "$BASE_URL" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "mcp-session-id: $SESSION_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":14,
+    "method":"tools/call",
+    "params":{
+      "name":"list_devices",
+      "arguments":{
+        "pageNumber":1,
+        "pageSize":10,
+        "sortBy":"deviceName",
+        "sortOrder":"ascending",
+        "format":"json"
+      }
+    }
+  }' \
+  | sed -n 's/^data: //p' \
+  | jq '.result.content[0].text
+        | fromjson
+        | {
+            page: {
+              pageNumber,
+              pageSize,
+              itemCount,
+              totalItems,
+              totalPages
+            },
+            devices: .data
+          }' \
+  | toon -e -
+```
+
+The same pattern works for other list tools:
+
+```bash
+| sed -n 's/^data: //p' \
+| jq '.result.content[0].text | fromjson | .data' \
+| toon -e -
+```
+
+## 10. How to read the outputs
 
 The server returns MCP `POST /mcp` results in four layers:
 
@@ -453,6 +572,7 @@ Useful rules:
 
 - Pipe MCP POST responses through `sed -n 's/^data: //p'` before `jq`.
 - Tool success responses are usually `result.content[0].text`, even when the payload is JSON.
+- For repeated JSON arrays, pipe parsed JSON to `toon -e -` for terminal-readable output.
 - Tool errors are reported with `isError: true` in the MCP result, not as a protocol-level failure.
 - Resources use `result.contents[]`.
 - Prompts use `result.messages[]`.
@@ -478,7 +598,7 @@ curl -sS -X POST "$BASE_URL" \
   | jq -r '.result.content[0].text | fromjson? // .'
 ```
 
-## 10. Session shutdown
+## 11. Session shutdown
 
 If you want to close the session explicitly:
 
