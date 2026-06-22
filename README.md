@@ -4,6 +4,10 @@
 
 ---
 
+## Efficiency warning
+
+- This is currently **very** input token inefficient. A proper CLI and skill will need to be developed for better output handling/agent reliability. The current MCP-native implementation shouldn't be used in long term production environments.
+
 ## Features at a Glance
 
 - **87 tools** covering devices, device notes, organizations, users, custom properties, scheduled tasks, PSA integrations, maintenance windows, and reporting — full coverage of the N-central REST API
