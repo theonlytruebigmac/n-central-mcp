@@ -1,0 +1,50 @@
+# N-central destructive-role sandbox image based on the first-party sandbox-cli Hermes base.
+#
+# Build the generic base from the sandbox-cli repo first:
+#
+#   docker build -f ~/Projects/sandbox-cli/Dockerfile.hermes -t sandbox-cli-hermes:local ~/Projects/sandbox-cli
+#
+# Then build this child image:
+#
+#   docker build -f Dockerfile.sandbox-hermes-ncentral-destructive -t ncentral-sandbox-hermes-destructive:local .
+
+# If building locally
+ARG SANDBOX_HERMES_BASE_IMAGE=sandbox-cli-hermes:local
+
+# If pulling from GitHub container registry
+# ARG SANDBOX_HERMES_BASE_IMAGE=ghcr.io/mcnallan/sandbox-cli-hermes:main
+
+FROM python:3.13-slim AS builder
+
+ARG NCENTRAL_BUILD_REV=2026-06-29-1
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    NCENTRAL_BUILD_REV=${NCENTRAL_BUILD_REV} \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /build
+
+COPY ncentral-core ./ncentral-core
+COPY ncentral-cli ./ncentral-cli
+COPY ncentral-cli-role-destructive ./ncentral-cli-role-destructive
+
+RUN python -m pip install --upgrade pip build
+RUN python -m build --wheel --outdir /dist ./ncentral-core
+RUN python -m build --wheel --outdir /dist ./ncentral-cli-role-destructive
+RUN python -m build --wheel --outdir /dist ./ncentral-cli
+
+FROM ${SANDBOX_HERMES_BASE_IMAGE}
+
+ARG NCENTRAL_BUILD_REV=2026-06-29-1
+
+ENV NCENTRAL_BUILD_REV=${NCENTRAL_BUILD_REV} \
+    HERMES_AGENT_NAME=ncentral-destructive
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY --from=builder /dist /tmp/ncentral-dist
+
+RUN set -eux; \
+    /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --find-links /tmp/ncentral-dist "ncentral-cli[destructive]"; \
+    rm -rf /tmp/ncentral-dist /root/.cache; \
+    ncentral --help >/tmp/ncentral-help.txt
