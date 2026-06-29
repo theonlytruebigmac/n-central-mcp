@@ -93,7 +93,7 @@ async function apiRequest(method, path, { params = {}, body = null } = {}) {
 
     if (res.status === 429) {
       if (attempt < MAX_RETRIES) {
-        const delay = RETRY_DELAY_MS * 2 ** attempt;
+        const delay = retryDelayMs(res.headers.get('retry-after'), attempt);
         auditLog('api_retry', { method, path: stripQuery(path), status: 429, attempt: attempt + 1, delayMs: delay });
         inc('nc_mcp_api_retries_total', { reason: '429' });
         await sleep(delay);
@@ -202,4 +202,14 @@ function buildUrl(fqdn, path, params) {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+export function retryDelayMs(retryAfter, attempt, now = Date.now()) {
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const date = Date.parse(retryAfter);
+    if (Number.isFinite(date)) return Math.max(0, date - now);
+  }
+  return RETRY_DELAY_MS * 2 ** attempt;
 }

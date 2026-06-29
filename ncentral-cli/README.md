@@ -51,8 +51,9 @@ ncentral --url http://127.0.0.1:3100/mcp tools
 
 ```bash
 ncentral tools
-ncentral devices list --page-size 1 --fields deviceId,longName,customerName
-ncentral search devices "server" --limit 10 --fields deviceId,longName,customerName
+ncentral devices list --customer "Example Customer" --device-type server --count
+ncentral devices list --customer "Example Customer" --group-by deviceClass
+ncentral devices inventory --customer "Example Customer" --device-type server --oldest 10
 ncentral call get_server_info --arg level=health
 ```
 
@@ -62,12 +63,19 @@ Prefer the smallest query that answers the question:
 
 ```bash
 # One cheap discovery page, projected to the useful fields.
-ncentral devices list --page-size 5 --fields deviceId,longName,customerName
+ncentral devices list --page-size 5 --fields deviceId,deviceName,customerName
 
-# Server-side filter first, then local match/projection/limit.
-ncentral search devices laptop \
-  --select 'customerName=="Example Customer"' \
-  --fields deviceId,longName,customerName --limit 10
+# Complete scoped count and grouping without external scripts.
+ncentral devices list --customer "Example Customer" --device-type server --count
+ncentral devices list --customer "Example Customer" --group-by deviceClass
+
+# Compact asset data; --oldest sorts by the normalized creation date.
+ncentral devices inventory --customer "Example Customer" \
+  --device-class "Workstations - Windows" --oldest 10
+
+# Normalized active issues and monitor status.
+ncentral devices issues --customer "Example Customer" --group-by serviceName
+ncentral devices monitor-status --customer "Example Customer" --state Failed --count
 
 # Raw MCP escape hatch for full API coverage.
 ncentral call list_devices --arg pageSize=5 --arg format=json
@@ -76,6 +84,10 @@ ncentral call list_devices --arg pageSize=5 --arg format=json
 The default output is TOON via the `python-toon` package. Use `--output json`
 for exact JSON, `--output compact-json` for byte-tight JSON, or `--output table`
 for human scanning.
+
+Inventory `createdOn` is the N-central record/enrollment creation time, not a
+hardware manufacture date. Asset enrichment runs conservatively to respect
+upstream rate limits, so always scope it by customer/site and class/type.
 
 ## Roles
 

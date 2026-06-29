@@ -12,22 +12,25 @@ const MAX_PAGES = 200;
  * Auto-paginate through a list endpoint, returning all items.
  * Throws if MAX_PAGES is reached with more pages still indicated.
  */
-export async function fetchAll(path, params = {}, pageSize = DEFAULT_PAGE_SIZE) {
+export async function fetchAll(path, params = {}, pageSize = DEFAULT_PAGE_SIZE, get = apiGet) {
   const all = [];
   let page = 1;
 
   while (page <= MAX_PAGES) {
-    const res = /** @type {any} */ (await apiGet(path, { ...params, pageNumber: page, pageSize }));
+    const res = /** @type {any} */ (await get(path, { ...params, pageNumber: page, pageSize }));
     if (res == null) break;
 
     const items = Array.isArray(res) ? res : (res.data ?? []);
     all.push(...items);
 
-    const totalPages = res.totalPages ?? res._page?.totalPages ?? 1;
-    if (page >= totalPages || items.length === 0) break;
+    const totalPages = res.totalPages ?? res._page?.totalPages;
+    // N-central sometimes reports unfiltered totals for filtered pages. A
+    // short page is authoritative and prevents requests for phantom pages.
+    if (items.length < pageSize || (totalPages != null && page >= totalPages)) break;
 
-    if (page === MAX_PAGES && page < totalPages) {
-      throw new Error(`fetchAll: hit MAX_PAGES (${MAX_PAGES}) on ${path} with ${totalPages} pages reported. Use a tighter filter or paginate manually.`);
+    if (page === MAX_PAGES) {
+      const detail = totalPages == null ? 'an unknown number of' : totalPages;
+      throw new Error(`fetchAll: hit MAX_PAGES (${MAX_PAGES}) on ${path} with ${detail} pages reported. Use a tighter filter or paginate manually.`);
     }
     page++;
   }

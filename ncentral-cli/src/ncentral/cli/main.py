@@ -9,6 +9,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ncentral.cli.device_queries import (
+    DEFAULT_DEVICE_FIELDS,
+    DEFAULT_INVENTORY_FIELDS,
+    DEFAULT_ISSUE_FIELDS,
+    DEFAULT_STATUS_FIELDS,
+    DeviceQueryService,
+    aggregate,
+    filter_devices,
+    normalize_issue,
+    project,
+    rows,
+    sort_rows,
+)
 from ncentral_core.catalog import (
     CATEGORIES,
     DESTRUCTIVE,
@@ -129,7 +142,17 @@ def build_parser(role: str = "read") -> argparse.ArgumentParser:
             add_tool_args(tool_parser, spec)
             tool_parser.add_argument("--fields", help="Comma-separated fields to keep from JSON results.")
             tool_parser.add_argument("--limit", type=int, help="Limit list-like JSON results.")
-            tool_parser.set_defaults(handler=handle_structured_tool, tool_name=spec.name)
+            if spec.name == "list_devices":
+                add_device_filter_args(tool_parser)
+                tool_parser.add_argument("--count", action="store_true", help="Return the number of matching devices.")
+                tool_parser.add_argument("--group-by", help="Group matching devices by a field and count each value.")
+                tool_parser.add_argument("--full", action="store_true", help="Return full native device records.")
+                tool_parser.set_defaults(handler=handle_device_list, tool_name=spec.name)
+            else:
+                tool_parser.set_defaults(handler=handle_structured_tool, tool_name=spec.name)
+
+        if category == "devices":
+            add_device_query_parsers(category_sub)
 
     return parser
 
@@ -166,6 +189,148 @@ def handle_structured_tool(args: argparse.Namespace, role: str) -> int:
     data = call_tool(args, spec.name, payload)
     data = shape_result(data, args.fields, args.limit)
     emit(data, output=args.output)
+    return 0
+
+
+def handle_device_list(args: argparse.Namespace, role: str) -> int:
+    enforce_scope(TOOL_BY_NAME["list_devices"], role)
+    with client_from_args(args) as client:
+        service = DeviceQueryService(client)
+        scope = service.resolve_scope(args.customer, args.site)
+        has_local_filters = bool(args.device_class or args.device_type or args.os_family)
+        devices = service.list_devices(
+            scope=scope,
+            select=args.select,
+            page_number=args.pageNumber,
+            page_size=args.pageSize,
+            sort_by=args.sortBy,
+            sort_order=args.sortOrder,
+            all_pages=args.all or args.count or bool(args.group_by) or has_local_filters,
+            filter_id=args.filterId,
+        )
+    devices = filter_devices(
+        devices,
+        device_classes=args.device_class,
+        device_type=args.device_type,
+        os_family=args.os_family,
+    )
+    result = aggregate(devices, args.group_by, args.count)
+    if not isinstance(result, list):
+        emit(result, output=args.output)
+        return 0
+    if args.limit is not None:
+        result = result[: max(0, args.limit)]
+    if args.full:
+        result = [row.get("_raw", row) for row in result]
+        fields = split_fields(args.fields)
+    else:
+        fields = split_fields(args.fields) or list(DEFAULT_DEVICE_FIELDS)
+    if fields:
+        result, missing = project(result, fields)
+        warn_missing_fields(missing)
+    emit(result, output=args.output)
+    return 0
+
+
+def handle_device_inventory(args: argparse.Namespace, role: str) -> int:
+    enforce_scope(TOOL_BY_NAME["report_devices_bulk"], role)
+    with client_from_args(args) as client:
+        service = DeviceQueryService(client)
+        scope = require_device_scope(service.resolve_scope(args.customer, args.site))
+        devices = filter_devices(
+            service.list_devices(scope=scope, all_pages=True, page_size=args.page_size),
+            device_classes=args.device_class,
+            device_type=args.device_type,
+            os_family=args.os_family,
+        )
+        inventory = merge_inventory(devices, bulk_summary(client, scope, devices, "assets", args.concurrency))
+        if args.include_lifecycle and devices:
+            inventory = merge_inventory(inventory, bulk_summary(client, scope, devices, "lifecycle", args.concurrency))
+
+    sort_field = args.sort
+    descending = args.descending
+    result_limit = args.limit
+    if args.oldest is not None:
+        sort_field, descending, result_limit = "createdOn", False, args.oldest
+    elif args.newest is not None:
+        sort_field, descending, result_limit = "createdOn", True, args.newest
+    if sort_field:
+        inventory = sort_rows(inventory, sort_field, descending)
+    if result_limit is not None:
+        inventory = inventory[: max(0, result_limit)]
+    fields = split_fields(args.fields) or list(DEFAULT_INVENTORY_FIELDS)
+    result, missing = project(inventory, fields)
+    warn_missing_fields(missing)
+    emit(result, output=args.output)
+    return 0
+
+
+def handle_device_issues(args: argparse.Namespace, role: str) -> int:
+    enforce_scope(TOOL_BY_NAME["list_active_issues"], role)
+    with client_from_args(args) as client:
+        service = DeviceQueryService(client)
+        scope = require_device_scope(service.resolve_scope(args.customer, args.site))
+        issues = [normalize_issue(row) for row in rows(client.call_tool("list_active_issues", {
+            "orgUnitId": scope["orgUnitId"],
+            "format": "json",
+        }))]
+        if args.device_class or args.device_type or args.os_family:
+            devices = filter_devices(
+                service.list_devices(scope=scope, all_pages=True),
+                device_classes=args.device_class,
+                device_type=args.device_type,
+                os_family=args.os_family,
+            )
+            allowed = {str(row.get("deviceId")) for row in devices}
+            issues = [row for row in issues if str(row.get("deviceId")) in allowed]
+    if args.service:
+        query = args.service.casefold()
+        issues = [row for row in issues if query in str(row.get("serviceName") or "").casefold()]
+    if args.notification_state:
+        query = args.notification_state.casefold()
+        issues = [row for row in issues if str(row.get("notificationState") or "").casefold() == query]
+    result = aggregate(issues, args.group_by, args.count)
+    if isinstance(result, list):
+        if args.limit is not None:
+            result = result[: max(0, args.limit)]
+        if args.full:
+            result = [row.get("_raw", row) for row in result]
+            fields = split_fields(args.fields)
+        else:
+            fields = split_fields(args.fields) or list(DEFAULT_ISSUE_FIELDS)
+        if fields:
+            result, missing = project(result, fields)
+            warn_missing_fields(missing)
+    emit(result, output=args.output)
+    return 0
+
+
+def handle_device_monitor_status(args: argparse.Namespace, role: str) -> int:
+    enforce_scope(TOOL_BY_NAME["report_devices_bulk"], role)
+    with client_from_args(args) as client:
+        service = DeviceQueryService(client)
+        scope = require_device_scope(service.resolve_scope(args.customer, args.site))
+        devices = filter_devices(
+            service.list_devices(scope=scope, all_pages=True, page_size=args.page_size),
+            device_classes=args.device_class,
+            device_type=args.device_type,
+            os_family=args.os_family,
+        )
+        statuses = bulk_summary(client, scope, devices, "monitor-status", args.concurrency)
+    if args.state:
+        query = args.state.casefold()
+        statuses = [row for row in statuses if str(row.get("state") or "").casefold() == query]
+    if args.service:
+        query = args.service.casefold()
+        statuses = [row for row in statuses if query in str(row.get("serviceName") or "").casefold()]
+    result = aggregate(statuses, args.group_by, args.count)
+    if isinstance(result, list):
+        if args.limit is not None:
+            result = result[: max(0, args.limit)]
+        fields = split_fields(args.fields) or list(DEFAULT_STATUS_FIELDS)
+        result, missing = project(result, fields)
+        warn_missing_fields(missing)
+    emit(result, output=args.output)
     return 0
 
 
@@ -220,6 +385,97 @@ def handle_prompt(args: argparse.Namespace, role: str) -> int:
         data = client.get_prompt(args.name, parse_key_values(args.arg))
     emit(data, output=args.output)
     return 0
+
+
+def add_device_filter_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--customer", help="Customer name or ID. Unique partial names are accepted.")
+    parser.add_argument("--site", help="Site name or ID. Use with --customer when the site name is not unique.")
+    parser.add_argument("--device-class", action="append", default=[], help="Exact device class. May be repeated.")
+    parser.add_argument("--device-type", choices=("server", "workstation", "laptop", "network", "printer", "other"))
+    parser.add_argument("--os-family", choices=("windows", "linux", "mac", "other"))
+
+
+def add_device_query_parsers(subparsers: argparse._SubParsersAction) -> None:
+    inventory = subparsers.add_parser("inventory", help="Retrieve compact asset inventory for matching devices.")
+    add_output_arg(inventory)
+    add_device_filter_args(inventory)
+    inventory.add_argument("--page-size", type=int, default=200, help="Device-list page size. Default: 200.")
+    inventory.add_argument("--include-lifecycle", action="store_true", help="Include purchase and warranty lifecycle fields.")
+    inventory.add_argument("--sort", help="Sort locally by a normalized inventory field.")
+    inventory.add_argument("--descending", action="store_true", help="Reverse local sort order.")
+    age = inventory.add_mutually_exclusive_group()
+    age.add_argument("--oldest", type=int, metavar="N", help="Return the N oldest devices by creation date.")
+    age.add_argument("--newest", type=int, metavar="N", help="Return the N newest devices by creation date.")
+    inventory.add_argument("--fields", help="Comma-separated normalized fields to keep.")
+    inventory.add_argument("--limit", type=int, help="Limit rows after enrichment and sorting.")
+    inventory.add_argument("--concurrency", type=int, help="Bulk endpoint concurrency. Default: 1.")
+    inventory.set_defaults(handler=handle_device_inventory)
+
+    issues = subparsers.add_parser("issues", help="List normalized active issues for a customer or site.")
+    add_output_arg(issues)
+    add_device_filter_args(issues)
+    issues.add_argument("--service", help="Case-insensitive service-name match.")
+    issues.add_argument("--notification-state", help="Exact notification-state match.")
+    issues.add_argument("--count", action="store_true")
+    issues.add_argument("--group-by", help="Group issues by a normalized field.")
+    issues.add_argument("--fields", help="Comma-separated normalized fields to keep.")
+    issues.add_argument("--limit", type=int, help="Limit returned issue rows.")
+    issues.add_argument("--full", action="store_true", help="Return full native issue records.")
+    issues.set_defaults(handler=handle_device_issues)
+
+    status = subparsers.add_parser("monitor-status", help="List normalized service-monitor status for matching devices.")
+    add_output_arg(status)
+    add_device_filter_args(status)
+    status.add_argument("--page-size", type=int, default=200, help="Device-list page size. Default: 200.")
+    status.add_argument("--state", help="Exact normalized status match, such as Failed or Normal.")
+    status.add_argument("--service", help="Case-insensitive service-name match.")
+    status.add_argument("--count", action="store_true")
+    status.add_argument("--group-by", help="Group statuses by a normalized field.")
+    status.add_argument("--fields", help="Comma-separated normalized fields to keep.")
+    status.add_argument("--limit", type=int, help="Limit returned status rows.")
+    status.add_argument("--concurrency", type=int, help="Bulk endpoint concurrency. Default: 1.")
+    status.set_defaults(handler=handle_device_monitor_status)
+
+
+def require_device_scope(scope: dict[str, Any] | None) -> dict[str, Any]:
+    if scope is None:
+        raise ValueError("This command requires --customer or --site to bound bulk retrieval")
+    return scope
+
+
+def bulk_summary(
+    client: StreamableHttpMcpClient,
+    scope: dict[str, Any],
+    devices: list[dict[str, Any]],
+    data_type: str,
+    concurrency: int | None,
+) -> list[dict[str, Any]]:
+    if not devices:
+        return []
+    payload: dict[str, Any] = {
+        "orgUnitId": scope["orgUnitId"],
+        "dataType": data_type,
+        "deviceIds": [str(row.get("deviceId")) for row in devices if row.get("deviceId") is not None],
+        "view": "summary",
+        "format": "json",
+    }
+    if concurrency is not None:
+        payload["concurrency"] = concurrency
+    return rows(client.call_tool("report_devices_bulk", payload))
+
+
+def merge_inventory(base_rows: list[dict[str, Any]], detail_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {str(row.get("deviceId")): {key: value for key, value in row.items() if key != "_raw"} for row in base_rows}
+    for detail in detail_rows:
+        key = str(detail.get("deviceId"))
+        current = by_id.setdefault(key, {})
+        current.update({field: value for field, value in detail.items() if value not in (None, "")})
+    return list(by_id.values())
+
+
+def warn_missing_fields(fields: list[str]) -> None:
+    if fields:
+        print(f"Warning: fields absent from every row: {', '.join(fields)}", file=sys.stderr)
 
 
 def call_tool(args: argparse.Namespace, tool_name: str, payload: dict[str, Any]) -> Any:

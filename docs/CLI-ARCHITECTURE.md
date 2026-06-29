@@ -219,7 +219,15 @@ ncentral reports active-issues --org-unit-id 123 --format json
 ncentral search devices server --fields deviceId,longName,customerName --limit 10
 ```
 
-3. Full-coverage escape hatch:
+3. Agent-oriented device queries:
+
+```bash
+ncentral devices list --customer "Example Customer" --device-type server --count
+ncentral devices inventory --customer "Example Customer" --device-type server --oldest 10
+ncentral devices issues --customer "Example Customer" --group-by serviceName
+```
+
+4. Full-coverage escape hatch:
 
 ```bash
 ncentral call list_devices --arg pageSize=5
@@ -258,10 +266,20 @@ The main retrieval goal is token efficiency for agents. The preferred pattern:
 - `scheduled-tasks`
 - `custom-psa-tickets`
 
-Search currently fetches the mapped list endpoint with defaults, applies an
-optional server `select`, then does local case-insensitive matching and field
-projection. This is intentionally simple. Future improvements could add target
-specific default fields or smarter server-side filter builders.
+Search fetches the mapped list endpoint, applies an optional server `select`,
+then does local case-insensitive matching and field projection. Device search
+uses one bounded 200-row page by default; use the scoped device commands when a
+complete customer result is required.
+
+Device list queries resolve `--customer` and `--site` names through MCP, use the
+org-unit device endpoint, and normalize common fields. Friendly class/type/OS
+filters, `--count`, and `--group-by` retrieve the complete scoped result before
+local processing. `--full` restores native device records.
+
+`devices inventory` requests the MCP bulk report's compact summary view. This
+exposes creation, hardware, OS, and optional lifecycle fields without returning
+the full nested asset document. `devices issues` normalizes active issue names;
+`devices monitor-status` provides bounded per-device service status retrieval.
 
 ## Output
 
@@ -337,6 +355,8 @@ Current tests verify:
 - Config loading reads `~/.ncentral-mcp/config.json`.
 - `--url` overrides configured endpoint while auth remains config-based.
 - Removed auth flags are rejected.
+- Agent-oriented command parsing, scope resolution, filtering, grouping, and
+  normalized field projection.
 
 Live smoke test with configured auth:
 
@@ -349,7 +369,7 @@ Installed smoke test:
 
 ```bash
 ncentral tools
-ncentral devices list --page-size 1 --fields deviceId,longName,customerName
+ncentral devices list --customer "Example Customer" --device-type server --count
 ```
 
 ## Known Quirks
@@ -358,9 +378,10 @@ ncentral devices list --page-size 1 --fields deviceId,longName,customerName
   the MCP tool exists. The CLI should surface that as an upstream API error.
 - N-central's `select` parameter is a row filter, not a field projection.
   Use CLI `--fields` for projection.
-- Large `search` targets use `all: true` defaults for completeness. For very
-  large tenants, prefer direct list commands with small `--page-size`, server
-  `--select`, and explicit fields first.
+- Device search is bounded and may not represent a complete tenant. Prefer
+  customer/site-scoped device commands for counts and inventory.
+- N-central can report tenant-wide page totals for a filtered response. The MCP
+  paginator treats empty and short pages as authoritative termination signals.
 - Config auth currently supports only the MCP bearer token, not multi-tenant
   N-central headers.
 

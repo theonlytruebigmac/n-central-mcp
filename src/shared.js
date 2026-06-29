@@ -58,9 +58,15 @@ export function paginationArgs(args) {
  * @param {PaginationArgs} [args]
  * @returns {Promise<unknown>}
  */
-export async function fetchOrPaginate(path, baseParams, args) {
-  if (args?.all) return fetchAll(path, baseParams);
-  return apiGet(path, { ...baseParams, ...paginationArgs(args || {}) });
+export async function fetchOrPaginate(path, baseParams, args, allFetcher = fetchAll, oneFetcher = apiGet) {
+  const params = { ...baseParams, ...paginationArgs(args || {}) };
+  if (args?.all) {
+    const pageSize = params.pageSize ?? 200;
+    delete params.pageNumber;
+    delete params.pageSize;
+    return allFetcher(path, params, pageSize);
+  }
+  return oneFetcher(path, params);
 }
 
 /**

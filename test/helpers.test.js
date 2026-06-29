@@ -6,8 +6,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { isToolAllowed, buildToolAnnotations } from '../src/tool-registry.js';
-import { unwrap, mapConcurrent, toCsv } from '../src/paginator.js';
-import { paginationArgs } from '../src/shared.js';
+import { fetchAll, unwrap, mapConcurrent, toCsv } from '../src/paginator.js';
+import { fetchOrPaginate, paginationArgs } from '../src/shared.js';
 
 // ---------------------------------------------------------------------------
 // tool-registry: isToolAllowed
@@ -143,6 +143,28 @@ describe('paginationArgs', () => {
   });
 });
 
+describe('fetchOrPaginate', () => {
+  it('preserves filters and sorting during auto-pagination', async () => {
+    let captured;
+    const result = await fetchOrPaginate('/api/devices', { filterId: 9 }, {
+      all: true,
+      pageSize: 50,
+      select: 'customerId==103',
+      sortBy: 'longName',
+      sortOrder: 'asc',
+    }, async (path, params, pageSize) => {
+      captured = { path, params, pageSize };
+      return [];
+    });
+    assert.deepEqual(result, []);
+    assert.deepEqual(captured, {
+      path: '/api/devices',
+      params: { filterId: 9, select: 'customerId==103', sortBy: 'longName', sortOrder: 'asc' },
+      pageSize: 50,
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // paginator: toCsv edge cases (Date, nested arrays, embedded newlines)
 // ---------------------------------------------------------------------------
@@ -178,6 +200,25 @@ describe('toCsv edge cases', () => {
 // integration coverage for now.
 // ---------------------------------------------------------------------------
 describe('fetchAll', () => {
+  it('stops on a short filtered page even when totalPages is unfiltered', async () => {
+    const calls = [];
+    const result = await fetchAll('/api/devices', { select: 'customerId==103' }, 200, async (_path, params) => {
+      calls.push(params);
+      return { data: [{ id: 1 }, { id: 2 }], totalPages: 14 };
+    });
+    assert.deepEqual(result, [{ id: 1 }, { id: 2 }]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].select, 'customerId==103');
+  });
+
+  it('continues without pagination metadata until a short page', async () => {
+    const pages = [
+      { data: [{ id: 1 }, { id: 2 }] },
+      { data: [{ id: 3 }] },
+    ];
+    const result = await fetchAll('/api/devices', {}, 2, async (_path, params) => pages[params.pageNumber - 1]);
+    assert.deepEqual(result.map(item => item.id), [1, 2, 3]);
+  });
   it('placeholder — see integration coverage', () => {
     assert.ok(true);
   });

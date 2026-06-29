@@ -8,10 +8,69 @@ import { formatParam, formatResult } from '../shared.js';
 // /api/devices = 5; /api/devices/{id}/assets/lifecycle-info = 1; others unpublished.
 const CONCURRENCY = {
   customProperties: 5,
-  assets: 3,
-  monitorStatus: 3,
+  assets: 1,
+  lifecycle: 1,
+  monitorStatus: 1,
   users: 5,
 };
+
+function first(...values) {
+  return values.find(value => value != null && value !== '') ?? null;
+}
+
+function normalizedDate(value) {
+  if (value == null || value === '') return null;
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? String(value) : date.toISOString();
+}
+
+export function summarizeAsset(response, device = {}) {
+  const asset = unwrap(response) || {};
+  const assetDevice = asset.device || {};
+  const system = asset.computersystem || {};
+  const os = asset.os || {};
+  const extraDevice = asset._extra?.device || {};
+  return {
+    deviceId: first(device.deviceId, device.id, assetDevice.deviceid),
+    deviceName: first(device.longName, device.deviceName, device.name, assetDevice.longname),
+    customerId: first(device.customerId, extraDevice.customerid),
+    customerName: first(device.customerName),
+    siteName: first(device.siteName),
+    deviceClass: first(device.deviceClass, assetDevice.deviceclass),
+    os: first(device.supportedOs, os.reportedos),
+    createdOn: normalizedDate(extraDevice.createdon),
+    lastCheckin: normalizedDate(first(device.lastApplianceCheckinTime, assetDevice.lastlogin)),
+    manufacturer: first(system.manufacturer),
+    model: first(system.model),
+    serialNumber: first(system.serialnumber),
+    warrantyExpiryDate: normalizedDate(extraDevice.warrantyexpirydate),
+  };
+}
+
+export function summarizeLifecycle(response, device = {}) {
+  const lifecycle = unwrap(response) || {};
+  return {
+    deviceId: first(device.deviceId, device.id),
+    deviceName: first(device.longName, device.deviceName, device.name),
+    purchaseDate: normalizedDate(lifecycle.purchaseDate),
+    warrantyExpiryDate: normalizedDate(lifecycle.warrantyExpiryDate),
+    leaseExpiryDate: normalizedDate(lifecycle.leaseExpiryDate),
+    expectedReplacementDate: normalizedDate(lifecycle.expectedReplacementDate),
+    assetTag: first(lifecycle.assetTag),
+    location: first(lifecycle.location),
+  };
+}
+
+export function summarizeMonitorStatus(status, device = {}) {
+  return {
+    deviceId: first(device.deviceId, device.id),
+    deviceName: first(device.longName, device.deviceName, device.name),
+    serviceName: first(status.moduleName, status.serviceName),
+    state: first(status.stateStatus, status.state),
+    lastScanTime: normalizedDate(status.lastScanTime),
+    transitionTime: normalizedDate(status.transitionTime),
+  };
+}
 
 function clampConcurrency(requested, fallback) {
   if (requested == null) return fallback;
@@ -76,6 +135,18 @@ const BULK_DATA_TYPES = {
       ...unwrap(response),
     }),
     skip404: true, // probes don't have assets
+    summarize: summarizeAsset,
+  },
+  'lifecycle': {
+    endpoint: (deviceId) => `/api/devices/${sanitizePathParam(deviceId)}/assets/lifecycle-info`,
+    concurrency: CONCURRENCY.lifecycle,
+    transform: (response, device) => ({
+      deviceId: device.deviceId || device.id,
+      deviceName: device.longName || device.deviceName || device.name || '',
+      ...unwrap(response),
+    }),
+    skip404: true,
+    summarize: summarizeLifecycle,
   },
   'monitor-status': {
     endpoint: (deviceId) => `/api/devices/${sanitizePathParam(deviceId)}/service-monitor-status`,
@@ -90,13 +161,14 @@ const BULK_DATA_TYPES = {
       }));
     },
     skip404: false,
+    summarize: summarizeMonitorStatus,
   },
 };
 
 export const reportTools = [
   {
     name: 'report_devices_bulk',
-    description: 'Fan out a per-device API call across all devices in an org unit. `dataType` selects which endpoint to call: "custom-properties", "assets" (probes return 404 and are skipped), or "monitor-status". Concurrency defaults are per-endpoint safe (3-5); override with `concurrency`. Returns CSV by default (set format: "json" to override).',
+    description: 'Fan out a per-device API call across devices in an org unit. Filter before fan-out with select, deviceIds, or deviceLimit. Set view: "summary" for compact normalized asset, lifecycle, and monitor-status rows. Returns CSV by default (set format: "json" to override).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -104,8 +176,12 @@ export const reportTools = [
         dataType: {
           type: 'string',
           description: 'Which per-device endpoint to call',
-          enum: ['custom-properties', 'assets', 'monitor-status'],
+          enum: ['custom-properties', 'assets', 'lifecycle', 'monitor-status'],
         },
+        select: { type: 'string', description: 'FIQL/RSQL device filter applied before fan-out' },
+        deviceIds: { type: 'array', items: { type: 'string' }, description: 'Only fan out to these device IDs' },
+        deviceLimit: { type: 'number', description: 'Maximum devices to process after filtering' },
+        view: { type: 'string', enum: ['raw', 'summary'], description: 'Result detail. Default: raw.' },
         ...formatParam,
         concurrency: { type: 'number', description: 'Concurrent API calls (1-10). Default varies by dataType.' },
       },
@@ -115,13 +191,29 @@ export const reportTools = [
       const cfg = BULK_DATA_TYPES[args.dataType];
       if (!cfg) throw new Error(`Unknown dataType: ${args.dataType}`);
 
-      const devices = await fetchAll(`/api/org-units/${sanitizePathParam(args.orgUnitId)}/devices`);
+      let devices = await fetchAll(
+        `/api/org-units/${sanitizePathParam(args.orgUnitId)}/devices`,
+        args.select ? { select: args.select } : {},
+      );
+      if (Array.isArray(args.deviceIds) && args.deviceIds.length) {
+        const requested = new Set(args.deviceIds.map(String));
+        devices = devices.filter(device => requested.has(String(device.deviceId || device.id)));
+      }
+      if (args.deviceLimit != null) devices = devices.slice(0, Math.max(0, Number(args.deviceLimit) || 0));
       console.error(`[bulk-${args.dataType}] Fetching for ${devices.length} devices...`);
 
       const rawResults = await mapConcurrent(devices, async (device) => {
         const deviceId = device.deviceId || device.id;
         if (!deviceId) return null;
         const response = await apiGet(cfg.endpoint(deviceId));
+        if (args.view === 'summary' && cfg.summarize) {
+          const items = unwrap(response);
+          if (args.dataType === 'monitor-status') {
+            const list = Array.isArray(items) ? items : [items];
+            return list.map(item => cfg.summarize(item || {}, device));
+          }
+          return cfg.summarize(response, device);
+        }
         return cfg.transform(response, device);
       }, clampConcurrency(args.concurrency, cfg.concurrency));
 

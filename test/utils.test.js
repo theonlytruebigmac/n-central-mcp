@@ -6,10 +6,16 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { sanitizePathParam } from '../src/client.js';
+import { retryDelayMs, sanitizePathParam } from '../src/client.js';
 import { toCsv } from '../src/paginator.js';
 import { auditLog } from '../src/logging.js';
-import { deduplicateUsers, buildDeviceCountByOrg } from '../src/tools/reports.js';
+import { deduplicateUsers, buildDeviceCountByOrg, summarizeAsset, summarizeLifecycle, summarizeMonitorStatus } from '../src/tools/reports.js';
+
+describe('retryDelayMs', () => {
+  it('honors Retry-After seconds', () => assert.equal(retryDelayMs('7', 0), 7000));
+  it('honors Retry-After dates', () => assert.equal(retryDelayMs('Thu, 01 Jan 2026 00:00:05 GMT', 0, Date.parse('2026-01-01T00:00:00Z')), 5000));
+  it('falls back to exponential backoff', () => assert.equal(retryDelayMs(null, 2), 8000));
+});
 
 describe('sanitizePathParam', () => {
   it('accepts numeric IDs', () => {
@@ -133,5 +139,37 @@ describe('report_customer_site_summary device rollup', () => {
   it('handles devices with no orgUnitId gracefully', () => {
     const counts = buildDeviceCountByOrg([{ orgUnitId: null }, {}], {});
     assert.deepEqual(counts, {});
+  });
+});
+
+describe('report device summary views', () => {
+  const device = {
+    deviceId: 42,
+    longName: 'SERVER01',
+    customerName: 'Example',
+    deviceClass: 'Servers - Windows',
+    supportedOs: 'Windows Server 2022',
+  };
+
+  it('extracts compact asset inventory fields', () => {
+    const row = summarizeAsset({ data: {
+      device: { deviceid: '42' },
+      computersystem: { manufacturer: 'Dell', model: 'R750', serialnumber: 'ABC' },
+      os: { reportedos: 'Windows Server 2022' },
+      _extra: { device: { createdon: '2024-01-02 03:04:05 -0600' } },
+    } }, device);
+    assert.equal(row.deviceName, 'SERVER01');
+    assert.equal(row.model, 'R750');
+    assert.equal(row.createdOn, '2024-01-02T09:04:05.000Z');
+    assert.equal(row._extra, undefined);
+  });
+
+  it('normalizes lifecycle and monitor status rows', () => {
+    const lifecycle = summarizeLifecycle({ purchaseDate: '2023-02-01', warrantyExpiryDate: '' }, device);
+    assert.equal(lifecycle.purchaseDate, '2023-02-01T00:00:00.000Z');
+    assert.equal(lifecycle.warrantyExpiryDate, null);
+    const status = summarizeMonitorStatus({ moduleName: 'Agent Status', stateStatus: 'Normal' }, device);
+    assert.equal(status.serviceName, 'Agent Status');
+    assert.equal(status.state, 'Normal');
   });
 });

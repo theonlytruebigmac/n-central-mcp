@@ -143,7 +143,7 @@ TOOLS: tuple[ToolSpec, ...] = (
     tool("delete_device_note", "notes", "Delete a device note.", (a("deviceId", required=True), a("noteId", required=True)), DESTRUCTIVE),
     tool("clear_device_notes", "notes", "Delete all notes on a device.", (a("deviceId", required=True),), DESTRUCTIVE),
     # Reports
-    tool("report_devices_bulk", "reports", "Fan out a per-device call across an org unit.", (a("orgUnitId", "int", True), a("dataType", required=True, choices=("custom-properties", "assets", "monitor-status")), FORMAT_ARG, a("concurrency", "int"))),
+    tool("report_devices_bulk", "reports", "Fan out a per-device call across an org unit.", (a("orgUnitId", "int", True), a("dataType", required=True, choices=("custom-properties", "assets", "lifecycle", "monitor-status")), a("select"), a("deviceIds", "json"), a("deviceLimit", "int"), a("view", choices=("raw", "summary")), FORMAT_ARG, a("concurrency", "int"))),
     tool("report_all_users_by_so", "reports", "Deduplicated users across an SO and its customers.", (a("soId", "int", True), FORMAT_ARG, a("concurrency", "int"))),
     tool("report_devices_by_so", "reports", "All devices under a service org.", (a("soId", "int", True), FORMAT_ARG)),
     tool("report_customer_site_summary", "reports", "Customers with sites and device counts.", (FORMAT_ARG,)),
@@ -157,7 +157,7 @@ TOOL_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
 CATEGORIES: tuple[str, ...] = tuple(dict.fromkeys(spec.category for spec in TOOLS))
 
 SEARCH_TARGETS: dict[str, tuple[str, dict[str, Any]]] = {
-    "devices": ("list_devices", {"all": True, "format": "json"}),
+    "devices": ("list_devices", {"pageSize": 200, "format": "json"}),
     "org-units": ("list_org_units", {"all": True, "format": "json"}),
     "service-orgs": ("list_service_orgs", {"all": True, "format": "json"}),
     "customers": ("list_customers", {"all": True, "format": "json"}),
