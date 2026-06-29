@@ -1,0 +1,40 @@
+[tool]
+name = "ncentral"
+description = "N-central CLI role marker packages installed from the local Python workspace."
+builder_image = "python:3.13-slim"
+
+[build]
+copy = [
+  { source = "../ncentral-core", dest = "ncentral-core" },
+  { source = ".", dest = "ncentral-cli" },
+  { source = "../ncentral-cli-role-read", dest = "ncentral-cli-role-read" },
+  { source = "../ncentral-cli-role-readwrite", dest = "ncentral-cli-role-readwrite" },
+  { source = "../ncentral-cli-role-destructive", dest = "ncentral-cli-role-destructive" },
+]
+commands = [
+  "python -m build --wheel --outdir /dist ./ncentral-core",
+  "python -m build --wheel --outdir /dist ./ncentral-cli-role-{role}",
+  "python -m build --wheel --outdir /dist ./ncentral-cli",
+]
+install_commands = [
+  "/usr/bin/python3 -m pip install --break-system-packages --no-cache-dir --find-links /tmp/sandbox-tool-dist \"ncentral-cli[{role}]\"",
+  "rm -rf /root/.cache",
+]
+smoke_commands = [
+  "ncentral --help >/tmp/ncentral-{role}-help.txt",
+]
+
+[roles.read]
+description = "Read-only N-central CLI role."
+openshell_policies = ["sandbox-cli:openshell-ncentral-policy.yaml"]
+terminal_policies = ["sandbox-cli:terminal-ncentral-read.yaml"]
+
+[roles.readwrite]
+description = "Read/write N-central CLI role."
+openshell_policies = ["sandbox-cli:openshell-ncentral-policy.yaml"]
+terminal_policies = ["sandbox-cli:terminal-ncentral-readwrite.yaml"]
+
+[roles.destructive]
+description = "Read/write/destructive N-central CLI role."
+openshell_policies = ["sandbox-cli:openshell-ncentral-policy.yaml"]
+terminal_policies = ["sandbox-cli:terminal-ncentral-destructive.yaml"]
